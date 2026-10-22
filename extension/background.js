@@ -2,7 +2,7 @@
 // moment a tracked email gets a new open. State is kept in chrome.storage so
 // the MV3 worker can be killed and restarted without re-notifying.
 
-const SERVER = "http://localhost:3000"; // keep in sync with content.js
+const SERVER = "https://mailtrack-server.onrender.com"; // keep in sync with content.js
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("poll", { periodInMinutes: 1 }); // min allowed = 1

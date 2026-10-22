@@ -1,4 +1,4 @@
-const SERVER = "http://localhost:3000"; // keep in sync with content.js
+const SERVER = "https://mailtrack-server.onrender.com"; // keep in sync with content.js
 
 function esc(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));

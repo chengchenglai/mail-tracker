@@ -66,13 +66,19 @@ export async function register(id, subject, recipient) {
   }
 }
 
+// Opens within this window after sending are almost always the sender's own
+// Gmail rendering the image, or Gmail's proxy prefetch at delivery time — not
+// a real recipient open. We ignore them to avoid false "read" reports.
+const GRACE_MS = 20000;
+
 // Returns the updated record if an open was recorded (for notifications),
-// or null if ignored (unknown id or deduped burst).
+// or null if ignored (unknown id, grace window, or deduped burst).
 export async function addOpen(id, open) {
   if (USE_PG) {
     const { rows } = await pg.query(`SELECT * FROM emails WHERE id=$1`, [id]);
     if (!rows.length) return null;
     const rec = rows[0];
+    if (open.at - Number(rec.created_at) < GRACE_MS) return null; // grace
     const opens = rec.opens || [];
     const last = opens[opens.length - 1];
     if (last && open.at - last.at < 5000) return null; // dedupe
@@ -86,6 +92,7 @@ export async function addOpen(id, open) {
     const db = loadJson();
     const rec = db.emails[id];
     if (!rec) return null;
+    if (open.at - rec.createdAt < GRACE_MS) return null; // grace
     const last = rec.opens[rec.opens.length - 1];
     if (last && open.at - last.at < 5000) return null;
     rec.opens.push(open);
