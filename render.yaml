@@ -1,0 +1,20 @@
+# Render Blueprint — 一鍵部署後端
+# 用法：把這個 repo 推到 GitHub → 在 Render 點 "New +" → "Blueprint" → 選這個 repo
+services:
+  - type: web
+    name: mailtrack-server
+    runtime: node
+    rootDir: server          # 後端在 server/ 子目錄
+    plan: free               # 免費方案
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # 部署時 Render 會提示你填這兩個（sync:false = 不寫死在檔案，手動輸入）
+      - key: DATABASE_URL   # Neon / Supabase 的連線字串 → 資料不被清空
+        sync: false
+      - key: NTFY_TOPIC     # 自訂一個難猜字串 → 手機 ntfy 推播；不想要可留空
+        sync: false
+    # 免費方案注意事項見 README：閒置 15 分鐘會休眠，醒來約 30 秒冷啟動

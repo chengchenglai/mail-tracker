@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<style>
+  body{font:13px/1.5 system-ui,"Microsoft JhengHei",sans-serif;width:340px;margin:0;color:#1a1a1a}
+  header{background:#1a73e8;color:#fff;padding:10px 14px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+  header a{color:#fff;font-size:12px;opacity:.9}
+  ul{list-style:none;margin:0;padding:0;max-height:380px;overflow:auto}
+  li{padding:10px 14px;border-bottom:1px solid #eee}
+  .subj{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .to{color:#777;font-size:12px}
+  .row{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
+  .badge{padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .open{background:#e6f4ea;color:#137333}.unopen{background:#eee;color:#777}
+  .empty{padding:24px;text-align:center;color:#999}
+</style>
+</head>
+<body>
+<header>📬 Mail Tracker <a href="http://localhost:3000" target="_blank">儀表板</a></header>
+<ul id="list"><li class="empty">載入中…</li></ul>
+<script src="popup.js"></script>
+</body>
+</html>

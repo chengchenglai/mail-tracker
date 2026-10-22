@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Mail Tracker for Gmail",
+  "version": "1.1.0",
+  "description": "Invisible open-tracking for Gmail (no visible signature), with desktop notifications.",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mail Tracker"
+  },
+  "icons": {
+    "128": "icon128.png"
+  }
+}
