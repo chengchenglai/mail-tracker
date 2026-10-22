@@ -37,9 +37,15 @@ app.use((req, res, next) => {
 
 // 1) Extension registers an email when it is sent
 app.post("/api/register", async (req, res) => {
-  const { id, subject, to } = req.body || {};
+  const { id, subject, to, thread, snippet } = req.body || {};
   if (!id) return res.status(400).json({ error: "id required" });
-  await store.register(id, subject || "(no subject)", to || "(unknown)");
+  await store.register(
+    id,
+    subject || "(no subject)",
+    to || "(unknown)",
+    thread || subject || "(no subject)",
+    snippet || ""
+  );
   res.json({ ok: true });
 });
 
@@ -84,23 +90,61 @@ app.get("/", (_req, res) => {
 </style></head><body>
 <header>📬 Mail Tracker</header>
 <main>
-  <p class="muted">每 5 秒自動更新。開信偵測受 Gmail 圖片代理快取影響，第一次開啟最準。</p>
-  <table><thead><tr><th>主旨</th><th>收件人</th><th>狀態</th><th>開啟次數</th><th>最後開啟</th></tr></thead>
-  <tbody id="rows"></tbody></table>
+  <p class="muted">每 5 秒自動更新。同一對話串的信件會收在一組。對話串裡「對方是否開啟此對話」才是可靠訊號——詳見每組標題的狀態。</p>
+  <div id="groups"></div>
 </main>
 <script>
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function fmt(t){return t? new Date(t).toLocaleString():'—'}
+
 async function refresh(){
   const r = await fetch('/api/emails'); const list = await r.json();
-  document.getElementById('rows').innerHTML = list.map(e=>{
-    const last = e.opens[e.opens.length-1];
-    const st = e.openCount? '<span class="badge open">已讀</span>':'<span class="badge unopen">未讀</span>';
-    return '<tr><td>'+esc(e.subject)+'</td><td>'+esc(e.to)+'</td><td>'+st+
-      '</td><td>'+e.openCount+'</td><td class="muted">'+(last? new Date(last.at).toLocaleString():'—')+'</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="muted">尚無資料</td></tr>';
+  // group by thread
+  const groups = {};
+  for(const e of list){
+    const k = e.thread || e.subject || '(no subject)';
+    (groups[k] = groups[k] || []).push(e);
+  }
+  // order groups by most recent activity (send or open)
+  const activity = g => Math.max(...g.map(e=>Math.max(e.createdAt, ...(e.opens.map(o=>o.at).concat([0])))));
+  const keys = Object.keys(groups).sort((a,b)=>activity(groups[b])-activity(groups[a]));
+
+  document.getElementById('groups').innerHTML = keys.map(k=>{
+    const msgs = groups[k].sort((a,b)=>b.createdAt-a.createdAt); // newest first
+    // thread-level: latest open time across all my messages in this thread
+    const lastOpen = Math.max(0, ...msgs.flatMap(e=>e.opens.map(o=>o.at)));
+    const opened = lastOpen>0;
+    const head = '<div class="ghead">'+
+      '<span class="gsubj">'+esc(k)+'</span>'+
+      (msgs.length>1? '<span class="gcount">'+msgs.length+' 封</span>':'')+
+      (opened? '<span class="badge open">對方已開啟此對話 · '+fmt(lastOpen)+'</span>'
+             : '<span class="badge unopen">尚未開啟</span>')+
+      '</div>';
+    const rows = msgs.map(e=>{
+      const last = e.opens[e.opens.length-1];
+      const st = e.openCount? '<span class="badge open">已讀 '+e.openCount+'</span>':'<span class="badge unopen">未讀</span>';
+      const label = e.snippet? esc(e.snippet) : '<span class="muted">(無內文摘要)</span>';
+      return '<div class="msg"><div class="msnip">'+label+'</div>'+
+        '<div class="meta"><span class="muted">寄出 '+fmt(e.createdAt)+'</span>'+st+
+        '<span class="muted">最後開啟 '+fmt(last&&last.at)+'</span></div></div>';
+    }).join('');
+    return '<div class="group">'+head+rows+'</div>';
+  }).join('') || '<p class="muted">尚無資料</p>';
 }
-function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 refresh(); setInterval(refresh,5000);
-</script></body></html>`);
+</script>
+<style>
+  #groups{display:flex;flex-direction:column;gap:14px}
+  .group{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden}
+  .ghead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid #eee;background:#fafafa}
+  .gsubj{font-weight:600}
+  .gcount{font-size:12px;color:#777;background:#eee;border-radius:999px;padding:1px 8px}
+  .ghead .badge{margin-left:auto}
+  .msg{padding:10px 14px;border-bottom:1px solid #f3f3f3}
+  .msg:last-child{border-bottom:0}
+  .msnip{font-size:14px;margin-bottom:4px}
+  .meta{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px}
+</style></body></html>`);
 });
 
 store.init().then(() => {

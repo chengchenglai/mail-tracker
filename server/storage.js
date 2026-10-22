@@ -29,6 +29,9 @@ async function initPg() {
       opens      JSONB NOT NULL DEFAULT '[]'::jsonb
     );
   `);
+  // added later — safe to run every boot
+  await pg.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS thread TEXT;`);
+  await pg.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS snippet TEXT;`);
   console.log("[storage] Postgres connected");
 }
 
@@ -50,18 +53,25 @@ export async function init() {
   else console.log("[storage] using local JSON file (no DATABASE_URL set)");
 }
 
-export async function register(id, subject, recipient) {
+export async function register(id, subject, recipient, thread, snippet) {
   const now = Date.now();
   if (USE_PG) {
     await pg.query(
-      `INSERT INTO emails (id, subject, recipient, created_at, opens)
-       VALUES ($1,$2,$3,$4,'[]'::jsonb)
-       ON CONFLICT (id) DO UPDATE SET subject=$2, recipient=$3`,
-      [id, subject, recipient, now]
+      `INSERT INTO emails (id, subject, recipient, created_at, opens, thread, snippet)
+       VALUES ($1,$2,$3,$4,'[]'::jsonb,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET subject=$2, recipient=$3, thread=$5, snippet=$6`,
+      [id, subject, recipient, now, thread || subject, snippet || ""]
     );
   } else {
     const db = loadJson();
-    db.emails[id] = { subject, to: recipient, createdAt: now, opens: [] };
+    db.emails[id] = {
+      subject,
+      to: recipient,
+      thread: thread || subject,
+      snippet: snippet || "",
+      createdAt: now,
+      opens: [],
+    };
     saveJson(db);
   }
 }
@@ -110,6 +120,8 @@ export async function listEmails() {
       id: r.id,
       subject: r.subject,
       to: r.recipient,
+      thread: r.thread || r.subject,
+      snippet: r.snippet || "",
       createdAt: Number(r.created_at),
       opens: r.opens || [],
       openCount: (r.opens || []).length,

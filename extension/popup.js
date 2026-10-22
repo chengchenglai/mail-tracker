@@ -20,9 +20,10 @@ async function render() {
           ? `<span class="badge open">已讀 ${e.openCount}</span>`
           : '<span class="badge unopen">未讀</span>';
         const when = last ? new Date(last.at).toLocaleString() : "";
+        const snip = e.snippet ? `<div class="to">${esc(e.snippet)}</div>` : "";
         return `<li>
-          <div class="subj">${esc(e.subject)}</div>
-          <div class="to">${esc(e.to)}</div>
+          <div class="subj">${esc(e.thread || e.subject)}</div>
+          ${snip}
           <div class="row">${badge}<span class="to">${when}</span></div>
         </li>`;
       })

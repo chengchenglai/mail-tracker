@@ -32,6 +32,28 @@ function getRecipients(dialog) {
   return [...set].join(", ") || "(unknown)";
 }
 
+// Thread key = subject with Re:/Fwd: prefixes stripped, so every message in a
+// back-and-forth groups under one conversation in the dashboard.
+function normalizeSubject(s) {
+  return (
+    (s || "")
+      .replace(/^((re|fwd|fw|回覆|回复|回复|轉寄|转寄|回復)\s*[:：]?\s*)+/i, "")
+      .trim() || "(no subject)"
+  );
+}
+
+// First line of what YOU typed in this reply (quoted history removed), so each
+// message in a long thread is identifiable at a glance.
+function getSnippet(body) {
+  if (!body) return "";
+  const clone = body.cloneNode(true);
+  clone
+    .querySelectorAll(".gmail_quote, blockquote, .gmail_extra, .gmail_signature")
+    .forEach((n) => n.remove());
+  const t = (clone.innerText || clone.textContent || "").replace(/\s+/g, " ").trim();
+  return t.slice(0, 80);
+}
+
 // Inject the invisible pixel into a compose body (once per body).
 function injectPixel(body) {
   if (!body || body.dataset.mtInjected) return body?.dataset.mtInjected;
@@ -50,10 +72,13 @@ function injectPixel(body) {
 
 function register(id, dialog) {
   if (!id) return;
+  const subject = getSubject(dialog);
   const payload = {
     id,
-    subject: getSubject(dialog),
+    subject,
     to: getRecipients(dialog),
+    thread: normalizeSubject(subject),
+    snippet: getSnippet(getBody(dialog)),
   };
   console.log("[MailTracker] registering", payload);
   fetch(`${SERVER}/api/register`, {
