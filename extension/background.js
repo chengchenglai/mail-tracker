@@ -6,7 +6,7 @@ const SERVER = "https://mailtrack-server.onrender.com"; // keep in sync with con
 
 // An open only counts once it has survived this long: within that window the
 // server may still retract it as the sender's own view of the thread.
-const SETTLE_MS = 40000;
+const SETTLE_MS = 20000;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("poll", { periodInMinutes: 1 }); // min allowed = 1

@@ -49,9 +49,9 @@ app.use((req, res, next) => {
 
 // 1) Extension registers an email when it is sent
 app.post("/api/register", async (req, res) => {
-  const { id, subject, to, thread, gthread, snippet } = req.body || {};
+  const { id, subject, to, thread, gthread, snippet, sender } = req.body || {};
   if (!id) return res.status(400).json({ error: "id required" });
-  await store.register({ id, subject, to, thread, gthread, snippet });
+  await store.register({ id, subject, to, thread, gthread, snippet, sender });
   res.json({ ok: true });
 });
 
@@ -79,6 +79,7 @@ app.post("/api/view", async (req, res) => {
   const b = req.body || {};
   const changed = await store.reportView({
     ids: Array.isArray(b.ids) ? b.ids.map(String) : [],
+    fresh: Array.isArray(b.fresh) ? b.fresh.map(String) : undefined,
     gthread: String(b.gthread || ""),
     thread: String(b.thread || ""),
     me: String(b.me || ""),

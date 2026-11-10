@@ -144,6 +144,7 @@ function register(dialog) {
     thread: normalizeSubject(subject),
     gthread: gthreadFor(dialog, subject),
     snippet: getSnippet(body),
+    sender: myEmail(),
   };
   console.log("[MailTracker] registering", payload);
   post("/api/register", payload)
@@ -217,14 +218,14 @@ function scanThread() {
   // Tracked pixels Gmail is rendering right now (compose windows excluded).
   const ids = new Set();
   const quoted = [];
-  let fresh = false;
+  const fresh = []; // one entry per pixel rendered since the last report
   main.querySelectorAll("img").forEach((img) => {
     const id = pixelId(img);
     if (!id || img.closest(EDITABLE)) return;
     ids.add(id);
     if (!reportedImgs.has(img)) {
       reportedImgs.add(img);
-      fresh = true;
+      fresh.push(id);
     }
     // My pixel inside a message someone else wrote = they replied on top of it.
     const from = senderOf(img.closest(".adn"));
@@ -238,10 +239,11 @@ function scanThread() {
   const replyKey = `${t.gthread}|${t.subject}|${lastFrom}|${quoted.length}`;
   const replyNews = !!me && !!lastFrom && replyKey !== lastReplyKey;
 
-  if (!fresh && !replyNews) return;
+  if (!fresh.length && !replyNews) return;
   lastReplyKey = replyKey;
   post("/api/view", {
-    ids: fresh ? [...ids] : [],
+    ids: [...ids],
+    fresh,
     gthread: t.gthread,
     thread: normalizeSubject(t.subject),
     me,

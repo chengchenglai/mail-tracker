@@ -7,7 +7,9 @@
 //
 // Record shape:
 //   { id, subject, to, thread, gthread, snippet, createdAt, opens: [{at,ua,viaProxy}],
-//     repliedAt, replyFrom, suppressUntil }
+//     repliedAt, replyFrom, sender }
+//   sender  = the Gmail account that sent it; only that account's own views
+//             are cancelled / used for reply detection
 //   thread  = subject with Re:/Fwd: stripped
 //   gthread = Gmail's own thread id (known for replies, learned later for the
 //             first message of a conversation)
@@ -34,7 +36,7 @@ function normalize(r) {
     opens: r.opens || [],
     repliedAt: Number(r.repliedAt) || 0,
     replyFrom: r.replyFrom || "",
-    suppressUntil: Number(r.suppressUntil) || 0,
+    sender: (r.sender || "").toLowerCase(),
   };
 }
 
@@ -51,7 +53,7 @@ const fromRow = (r) =>
     opens: r.opens,
     repliedAt: r.replied_at,
     replyFrom: r.reply_from,
-    suppressUntil: r.suppress_until,
+    sender: r.sender,
   });
 
 const pgBackend = {
@@ -78,7 +80,7 @@ const pgBackend = {
       "gthread TEXT",
       "replied_at BIGINT",
       "reply_from TEXT",
-      "suppress_until BIGINT",
+      "sender TEXT",
     ]) {
       await pg.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS ${col};`);
     }
@@ -101,11 +103,11 @@ const pgBackend = {
   async put(r) {
     await pg.query(
       `INSERT INTO emails (id, subject, recipient, created_at, opens, thread, snippet,
-                           gthread, replied_at, reply_from, suppress_until)
+                           gthread, replied_at, reply_from, sender)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11)
        ON CONFLICT (id) DO UPDATE SET
          subject=$2, recipient=$3, created_at=$4, opens=$5::jsonb, thread=$6, snippet=$7,
-         gthread=$8, replied_at=$9, reply_from=$10, suppress_until=$11`,
+         gthread=$8, replied_at=$9, reply_from=$10, sender=$11`,
       [
         r.id,
         r.subject,
@@ -117,7 +119,7 @@ const pgBackend = {
         r.gthread,
         r.repliedAt,
         r.replyFrom,
-        r.suppressUntil,
+        r.sender,
       ]
     );
   },
@@ -171,13 +173,16 @@ function serial(fn) {
 
 // ---------- rules ----------
 
-// Opens this soon after sending are the sender's own Gmail rendering the image
-// or a delivery-time prefetch — not the recipient.
-const GRACE_MS = 20000;
-// When the sender's own Gmail reports it is displaying a tracked message, hits
-// this close to that moment (before or after) are the sender's, not the
-// recipient's.
-export const SELF_MS = 30000;
+// Opens this soon after sending cannot be the recipient yet (the sender's own
+// Gmail rendering the just-sent mail is handled separately, below).
+const GRACE_MS = 8000;
+// Each time the sender's own Gmail renders a tracked pixel it causes exactly
+// one hit, arriving within moments of the extension's report. So a report
+// cancels ONE hit per rendered pixel: the one that just landed, or else the
+// next one within this window. Nothing else is discarded — the recipient
+// opening the mail seconds after it was sent must still count.
+export const SELF_MS = 10000;
+const selfCredits = new Map(); // id → { n, until }
 // A message registered this recently can't have been answered yet; guards the
 // moment right after Send when the thread view still ends with the other side.
 const REPLY_GUARD_MS = 30000;
@@ -194,7 +199,7 @@ export function threadKey(r) {
 
 export const init = () => be.init();
 
-export function register({ id, subject, to, thread, gthread, snippet }) {
+export function register({ id, subject, to, thread, gthread, snippet, sender }) {
   return serial(async () => {
     const now = Date.now();
     const prev = await be.get(id);
@@ -206,6 +211,7 @@ export function register({ id, subject, to, thread, gthread, snippet }) {
       thread: thread || subject,
       gthread: gthread || (prev && prev.gthread) || "",
       snippet,
+      sender: sender || (prev && prev.sender) || "",
       createdAt: now, // re-send after "Undo" restarts the grace window
     });
     await be.put(rec);
@@ -231,7 +237,11 @@ export function addOpen(id, open) {
     const rec = await be.get(id);
     if (!rec) return null;
     if (open.at - rec.createdAt < GRACE_MS) return null; // grace
-    if (open.at < rec.suppressUntil) return null; // sender is looking at it
+    const credit = selfCredits.get(id);
+    if (credit && credit.n > 0 && open.at < credit.until) {
+      credit.n--; // the sender's own render, announced by the extension
+      return null;
+    }
     const last = rec.opens[rec.opens.length - 1];
     if (last && open.at - last.at < 5000) return null; // dedupe
     rec.opens.push(open);
@@ -246,31 +256,42 @@ function markReplied(rec, from, at) {
 }
 
 // The extension reports what the sender's own Gmail is showing:
-//   ids      tracked pixels currently rendered on screen (→ those hits are mine)
+//   ids      tracked pixels currently on screen
+//   fresh    ids of pixels rendered since the last report, one entry per
+//            render (→ that many hits are mine)
 //   gthread  Gmail thread id of the open conversation
 //   thread   its normalized subject
 //   me       the sender's own address
 //   lastFrom who wrote the newest message in the conversation
 //   quoted   [{id, from}] someone else's message that carries my pixel, i.e.
 //            they replied on top of that mail
-export function reportView({ ids = [], gthread = "", thread = "", me = "", lastFrom = "", quoted = [] }) {
+export function reportView({ ids = [], fresh = ids, gthread = "", thread = "", me = "", lastFrom = "", quoted = [] }) {
   return serial(async () => {
     const now = Date.now();
     me = me.toLowerCase();
     lastFrom = lastFrom.toLowerCase();
     const seen = new Set(ids);
+    const renders = new Map(); // id → how many times my Gmail just rendered it
+    for (const id of fresh) renders.set(id, (renders.get(id) || 0) + 1);
     const quotedBy = new Map(quoted.map((q) => [q.id, String(q.from || "").toLowerCase()]));
     const otherRepliedLast = !!me && !!lastFrom && lastFrom !== me;
     let changed = 0;
 
     for (const rec of await be.all()) {
+      // Another account in the same browser (e.g. the recipient's, when
+      // testing) looking at this mail is a real open, not a self-view.
+      if (rec.sender && me && rec.sender !== me) continue;
       let dirty = false;
 
-      if (seen.has(rec.id)) {
-        const kept = rec.opens.filter((o) => o.at < now - SELF_MS);
-        if (kept.length !== rec.opens.length) rec.opens = kept;
-        rec.suppressUntil = now + SELF_MS;
-        if (gthread && !rec.gthread) rec.gthread = gthread;
+      let mine = renders.get(rec.id) || 0;
+      while (mine > 0 && rec.opens.length && rec.opens[rec.opens.length - 1].at >= now - SELF_MS) {
+        rec.opens.pop(); // my hit already landed
+        mine--;
+        dirty = true;
+      }
+      if (mine > 0) selfCredits.set(rec.id, { n: mine, until: now + SELF_MS }); // still on its way
+      if (seen.has(rec.id) && gthread && !rec.gthread) {
+        rec.gthread = gthread;
         dirty = true;
       }
 
