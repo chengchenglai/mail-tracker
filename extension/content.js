@@ -1,16 +1,54 @@
 // Mail Tracker — injects an invisible tracking pixel into Gmail compose windows
 // and registers the mail when it is sent. Works regardless of Gmail UI language
 // (detects the Send button by its stable CSS class, not by localized text).
+//
+// It also watches the conversation you have open, for two reasons:
+//  - your own Gmail renders the tracked pixels too; reporting that lets the
+//    server discard those hits instead of counting them as the recipient's
+//  - it can see whether the other side has answered in the thread
 
 const SERVER = "https://mailtrack-server.onrender.com"; // deployed server URL
+const EDITABLE = 'div[g_editable="true"][role="textbox"]';
+const QUOTE = ".gmail_quote, blockquote, .gmail_extra";
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
+// Tracking id of one of OUR pixels, or null. Matches both the raw URL and
+// Gmail's image-proxy form (…googleusercontent.com/…#<original url>).
+const PIXEL_RE = new RegExp(
+  SERVER.replace(/^https?:\/\//, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/t/([a-z0-9]+)\\.gif",
+  "i"
+);
+function pixelId(img) {
+  const m = PIXEL_RE.exec(img.getAttribute("src") || "");
+  return m ? m[1] : null;
+}
+
+function post(path, payload) {
+  return fetch(SERVER + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// ---------- compose ----------
+
 // Compose body: language-independent (g_editable is set by Gmail, not localized)
 function getBody(scope) {
-  return scope.querySelector('div[g_editable="true"][role="textbox"]');
+  return scope.querySelector(EDITABLE);
+}
+// The conversation currently open behind/around the compose, if any.
+function openThread() {
+  const h = document.querySelector("h2.hP");
+  if (!h || !h.textContent.trim()) return null;
+  return {
+    el: h,
+    subject: h.textContent.trim(),
+    gthread: h.getAttribute("data-thread-perm-id") || h.getAttribute("data-legacy-thread-id") || "",
+  };
 }
 function getSubject(dialog) {
   // New mail: the compose has its own subject input.
@@ -18,8 +56,8 @@ function getSubject(dialog) {
   if (s && s.value) return s.value;
   // Reply / inline reply: no subject box — use the open conversation's
   // thread subject header (h2.hP is Gmail's subject title, language-neutral).
-  const h = document.querySelector("h2.hP");
-  if (h && h.textContent.trim()) return "Re: " + h.textContent.trim();
+  const t = openThread();
+  if (t) return "Re: " + t.subject;
   return "(no subject)";
 }
 function getRecipients(dialog) {
@@ -37,9 +75,19 @@ function getRecipients(dialog) {
 function normalizeSubject(s) {
   return (
     (s || "")
-      .replace(/^((re|fwd|fw|回覆|回复|回复|轉寄|转寄|回復)\s*[:：]?\s*)+/i, "")
+      .replace(/^((re|fwd|fw|回覆|回复|轉寄|转寄|回復)\s*[:：]?\s*)+/i, "")
       .trim() || "(no subject)"
   );
+}
+
+// Gmail thread id for a compose — only when the compose really belongs to the
+// open conversation: an inline reply, or a popped-out reply whose subject still
+// matches. A brand-new mail written while some thread is open gets none.
+function gthreadFor(dialog, subject) {
+  const t = openThread();
+  if (!t || !t.gthread) return "";
+  const inline = !dialog.matches || !dialog.matches('div[role="dialog"]');
+  return inline || normalizeSubject(subject) === normalizeSubject(t.subject) ? t.gthread : "";
 }
 
 // First line of what YOU typed in this reply (quoted history removed), so each
@@ -47,16 +95,30 @@ function normalizeSubject(s) {
 function getSnippet(body) {
   if (!body) return "";
   const clone = body.cloneNode(true);
-  clone
-    .querySelectorAll(".gmail_quote, blockquote, .gmail_extra, .gmail_signature")
-    .forEach((n) => n.remove());
+  clone.querySelectorAll(QUOTE + ", .gmail_signature").forEach((n) => n.remove());
   const t = (clone.innerText || clone.textContent || "").replace(/\s+/g, " ").trim();
   return t.slice(0, 80);
 }
 
-// Inject the invisible pixel into a compose body (once per body).
-function injectPixel(body) {
-  if (!body || body.dataset.mtInjected) return body?.dataset.mtInjected;
+// Make sure a compose body carries exactly ONE pixel of ours, outside the
+// quoted history, and return its id.
+//  - pixels inside the quote belong to earlier mails of the thread; left in,
+//    opening this mail would fire them and mark those old mails as "opened"
+//  - a reopened draft (or "Undo send") already has its pixel: reuse it rather
+//    than stacking a second one
+function ensurePixel(body) {
+  if (!body) return null;
+  let own = null;
+  body.querySelectorAll("img").forEach((img) => {
+    const id = pixelId(img);
+    if (!id) return;
+    if (img.closest(QUOTE) || own) img.remove();
+    else own = { id, img };
+  });
+  if (own) {
+    if (own.id !== body.dataset.mtInjected) body.dataset.mtInjected = own.id;
+    return own.id;
+  }
   const id = uid();
   body.dataset.mtInjected = id;
   const img = document.createElement("img");
@@ -70,7 +132,9 @@ function injectPixel(body) {
   return id;
 }
 
-function register(id, dialog) {
+function register(dialog) {
+  const body = getBody(dialog);
+  const id = ensurePixel(body);
   if (!id) return;
   const subject = getSubject(dialog);
   const payload = {
@@ -78,14 +142,11 @@ function register(id, dialog) {
     subject,
     to: getRecipients(dialog),
     thread: normalizeSubject(subject),
-    snippet: getSnippet(getBody(dialog)),
+    gthread: gthreadFor(dialog, subject),
+    snippet: getSnippet(body),
   };
   console.log("[MailTracker] registering", payload);
-  fetch(`${SERVER}/api/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })
+  post("/api/register", payload)
     .then(() => console.log("[MailTracker] registered OK", id))
     .catch((e) => console.warn("[MailTracker] register failed", e));
 }
@@ -94,14 +155,6 @@ function register(id, dialog) {
 function composeOf(el) {
   return el.closest('div[role="dialog"]') || el.closest(".nH.Hd") || el.closest(".iN") || document;
 }
-
-// Watch for compose windows and inject the pixel as they appear.
-const observer = new MutationObserver(() => {
-  document.querySelectorAll('div[g_editable="true"][role="textbox"]').forEach(injectPixel);
-});
-observer.observe(document.body, { childList: true, subtree: true });
-// also run once on load for already-open composes
-document.querySelectorAll('div[g_editable="true"][role="textbox"]').forEach(injectPixel);
 
 // Register on SEND — detected language-independently:
 //  - the blue Send button carries the stable class "aoO"
@@ -118,11 +171,7 @@ document.addEventListener(
   "click",
   (e) => {
     const btn = e.target.closest("div[role='button'], .aoO");
-    if (!isSendButton(btn)) return;
-    const dialog = composeOf(btn);
-    const body = getBody(dialog);
-    const id = body ? injectPixel(body) || body.dataset.mtInjected : null;
-    register(id, dialog);
+    if (isSendButton(btn)) register(composeOf(btn));
   },
   true
 );
@@ -130,14 +179,82 @@ document.addEventListener(
 document.addEventListener(
   "keydown",
   (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && e.target.closest) {
       const dialog = composeOf(e.target);
-      const body = getBody(dialog);
-      const id = body ? injectPixel(body) || body.dataset.mtInjected : null;
-      register(id, dialog);
+      if (dialog !== document && getBody(dialog)) register(dialog);
     }
   },
   true
 );
+
+// ---------- watching the open conversation ----------
+
+function myEmail() {
+  // Gmail's tab title is "<subject> - <my address> - Gmail" in every language.
+  const m = document.title.match(/[^\s<>()"']+@[^\s<>()"']+\.[a-z]{2,}/i);
+  return m ? m[0].toLowerCase() : "";
+}
+
+const reportedImgs = new WeakSet(); // pixel <img> elements already reported
+let lastReplyKey = ""; // thread + newest sender we last told the server about
+
+function scanThread() {
+  const t = openThread();
+  if (!t) {
+    lastReplyKey = "";
+    return;
+  }
+  const main = t.el.closest('div[role="main"]') || document;
+  const me = myEmail();
+  const senderOf = (msg) => {
+    const s = msg && msg.querySelector(".gD[email]");
+    return s ? s.getAttribute("email").toLowerCase() : "";
+  };
+
+  // Tracked pixels Gmail is rendering right now (compose windows excluded).
+  const ids = new Set();
+  const quoted = [];
+  let fresh = false;
+  main.querySelectorAll("img").forEach((img) => {
+    const id = pixelId(img);
+    if (!id || img.closest(EDITABLE)) return;
+    ids.add(id);
+    if (!reportedImgs.has(img)) {
+      reportedImgs.add(img);
+      fresh = true;
+    }
+    // My pixel inside a message someone else wrote = they replied on top of it.
+    const from = senderOf(img.closest(".adn"));
+    if (me && from && from !== me) quoted.push({ id, from });
+  });
+
+  // Gmail always expands the newest message, so the last expanded one tells us
+  // who spoke last.
+  const msgs = main.querySelectorAll(".adn");
+  const lastFrom = senderOf(msgs[msgs.length - 1]);
+  const replyKey = `${t.gthread}|${t.subject}|${lastFrom}|${quoted.length}`;
+  const replyNews = !!me && !!lastFrom && replyKey !== lastReplyKey;
+
+  if (!fresh && !replyNews) return;
+  lastReplyKey = replyKey;
+  post("/api/view", {
+    ids: fresh ? [...ids] : [],
+    gthread: t.gthread,
+    thread: normalizeSubject(t.subject),
+    me,
+    lastFrom,
+    quoted,
+  }).catch((e) => console.warn("[MailTracker] view report failed", e));
+}
+
+// ---------- one observer drives both ----------
+let scanTimer = null;
+function onDomChange() {
+  document.querySelectorAll(EDITABLE).forEach(ensurePixel);
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(scanThread, 400);
+}
+new MutationObserver(onDomChange).observe(document.body, { childList: true, subtree: true });
+onDomChange(); // already-open composes / conversation
 
 console.log("[MailTracker] active →", SERVER);

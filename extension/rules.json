@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||mailtrack-server.onrender.com/t/",
+      "resourceTypes": ["image"]
+    }
+  }
+]

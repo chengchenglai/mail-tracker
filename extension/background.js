@@ -1,8 +1,12 @@
-// Background worker: polls the server and fires a desktop notification the
-// moment a tracked email gets a new open. State is kept in chrome.storage so
-// the MV3 worker can be killed and restarted without re-notifying.
+// Background worker: polls the server and fires a desktop notification when a
+// tracked conversation gets a new open. State is kept in chrome.storage so the
+// MV3 worker can be killed and restarted without re-notifying.
 
 const SERVER = "https://mailtrack-server.onrender.com"; // keep in sync with content.js
+
+// An open only counts once it has survived this long: within that window the
+// server may still retract it as the sender's own view of the thread.
+const SETTLE_MS = 40000;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create("poll", { periodInMinutes: 1 }); // min allowed = 1
@@ -25,20 +29,23 @@ async function poll() {
   const { seen = {} } = await chrome.storage.local.get("seen");
   let changed = false;
   const now = Date.now();
+  const notified = new Set(); // one notification per conversation per poll
 
   for (const e of list) {
-    const count = e.openCount || 0;
+    const settled = e.opens.filter((o) => now - o.at > SETTLE_MS);
+    const count = settled.length;
     const prev = seen[e.id] || 0;
-    // Only notify for opens that are NEW to us (prev < count) and avoid
-    // notifying for historical backlog the first time we ever see an id.
-    if (e.id in seen && count > prev) {
-      const last = e.opens[e.opens.length - 1];
-      // skip very old opens (e.g. first-ever sync) and proxy prefetch noise
-      if (last && now - last.at < 10 * 60 * 1000) {
-        notify(e, count);
+    // Only notify for opens that are NEW to us (prev < count), never for the
+    // backlog the first time we see an id, never for stale opens, and not for
+    // conversations the other side has already answered.
+    if (e.id in seen && count > prev && !e.repliedAt && !notified.has(e.key)) {
+      const last = settled[settled.length - 1];
+      if (now - last.at < 10 * 60 * 1000) {
+        notified.add(e.key);
+        notify(e, last.at);
       }
     }
-    if (prev !== count) {
+    if (prev !== count || !(e.id in seen)) {
       seen[e.id] = count;
       changed = true;
     }
@@ -46,13 +53,13 @@ async function poll() {
   if (changed) await chrome.storage.local.set({ seen });
 }
 
-function notify(email, count) {
-  chrome.notifications.create(`${email.id}-${count}`, {
+function notify(email, at) {
+  chrome.notifications.create(`${email.key}-${at}`, {
     type: "basic",
     iconUrl: "icon128.png",
     title: "📬 信件被開啟了",
-    message: `${email.subject}\n${email.to}`,
-    contextMessage: count > 1 ? `第 ${count} 次開啟` : "首次開啟",
+    message: `${email.thread}\n${email.to}`,
+    contextMessage: new Date(at).toLocaleTimeString(),
     priority: 2,
   });
 }
