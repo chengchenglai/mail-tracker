@@ -294,13 +294,13 @@ function makeTicks() {
   wrap.style.cssText = "display:inline-flex;vertical-align:middle;margin:0 6px;flex:none;cursor:default";
   const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 16");
-  svg.setAttribute("width", "21");
-  svg.setAttribute("height", "14");
+  svg.setAttribute("width", "24");
+  svg.setAttribute("height", "16");
   for (const d of ["M1.5 8.5l4 4 8-9", "M9.5 8.5l4 4 8-9"]) {
     const p = document.createElementNS(NS, "path");
     p.setAttribute("d", d);
     p.setAttribute("fill", "none");
-    p.setAttribute("stroke-width", "2.4");
+    p.setAttribute("stroke-width", "3.4");
     p.setAttribute("stroke-linecap", "round");
     p.setAttribute("stroke-linejoin", "round");
     svg.appendChild(p);

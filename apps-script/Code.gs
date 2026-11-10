@@ -4,27 +4,34 @@
 // This script runs inside YOUR Google account (script.google.com), asks the
 // tracking server for the state of each conversation once a minute, and keeps
 // two labels in sync:
-//     ✓    sent, not opened yet
-//     ✓✓   opened (or answered) by the other side
+//     ✔    sent, not opened yet
+//     ✔✔   opened (or answered) by the other side
 //
 // Setup: see README, "手機 Gmail App 顯示勾勾". Run `install` once.
 
 const SERVER = "https://mailtrack-server.onrender.com"; // same as the extension
-const LABEL_SENT = "✓";
-const LABEL_READ = "✓✓";
+const LABEL_SENT = "✔";
+const LABEL_READ = "✔✔";
+const OLD_LABELS = ["✓", "✓✓"]; // thin marks used by an earlier version
 const MAX_AGE_DAYS = 30; // conversations idle longer than this are left alone
 
 // Run once by hand: authorizes the script and starts the every-minute sync.
 function install() {
   ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger("sync").timeBased().everyMinutes(1).create();
+  deleteLabels(OLD_LABELS);
+  PropertiesService.getUserProperties().deleteProperty("state"); // re-label everything
   sync();
 }
 
 // Run by hand to stop syncing and remove both labels everywhere.
 function uninstall() {
   ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
-  [LABEL_SENT, LABEL_READ].forEach((name) => {
+  deleteLabels([LABEL_SENT, LABEL_READ].concat(OLD_LABELS));
+}
+
+function deleteLabels(names) {
+  names.forEach((name) => {
     const l = GmailApp.getUserLabelByName(name);
     if (l) l.deleteLabel();
   });
