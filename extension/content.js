@@ -147,7 +147,10 @@ function register(dialog) {
   };
   console.log("[MailTracker] registering", payload);
   post("/api/register", payload)
-    .then(() => console.log("[MailTracker] registered OK", id))
+    .then(() => {
+      console.log("[MailTracker] registered OK", id);
+      loadThreads(); // show the ✓ for the mail just sent
+    })
     .catch((e) => console.warn("[MailTracker] register failed", e));
 }
 
@@ -247,12 +250,123 @@ function scanThread() {
   }).catch((e) => console.warn("[MailTracker] view report failed", e));
 }
 
-// ---------- one observer drives both ----------
+// ---------- double-check marks in Gmail ----------
+// ✓✓ next to a tracked conversation, in the mail list and beside the subject of
+// the open conversation:  green + grey = sent, not opened yet
+//                         green + green = the other side has opened it
+const GREEN = "#1e8e3e";
+const GREY = "#c4c7c5";
+let threads = []; // latest /api/threads
+
+async function loadThreads() {
+  if (document.hidden) return;
+  try {
+    threads = await (await fetch(SERVER + "/api/threads")).json();
+    renderTicks();
+  } catch {}
+}
+
+// Conversation for a Gmail thread id (several spellings may be offered), or —
+// only for conversations whose thread id is not known yet — by subject.
+function findThread(gids, subject) {
+  const ids = gids.filter(Boolean).map((g) => g.replace(/^#/, ""));
+  const byId = threads.find((t) => ids.includes(t.key));
+  if (byId) return byId;
+  const s = normalizeSubject(subject);
+  return threads.find((t) => t.key.includes("|") && t.subject === s) || null;
+}
+
+function tickInfo(t) {
+  const time = (ms) => new Date(ms).toLocaleString();
+  if (t.status === "replied") return { read: true, tip: "對方已回覆" };
+  if (t.status === "read")
+    return { read: true, tip: `對方已讀 · 最後開啟 ${time(t.lastOpenAt)}（共 ${t.openCount} 次）` };
+  return { read: false, tip: `已寄出、尚未開啟 · ${time(t.sentAt)}` };
+}
+
+// Built node by node: Gmail enforces Trusted Types, so innerHTML is off limits.
+function makeTicks() {
+  const NS = "http://www.w3.org/2000/svg";
+  const wrap = document.createElement("span");
+  wrap.className = "mt-ticks";
+  wrap.style.cssText = "display:inline-flex;vertical-align:middle;margin:0 6px;flex:none;cursor:default";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 16");
+  svg.setAttribute("width", "21");
+  svg.setAttribute("height", "14");
+  for (const d of ["M1.5 8.5l4 4 8-9", "M9.5 8.5l4 4 8-9"]) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d);
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke-width", "2.4");
+    p.setAttribute("stroke-linecap", "round");
+    p.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(p);
+  }
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// Put (or update, or remove) the marks for conversation `t` inside `host`.
+// Touches the DOM only when something actually changed, so it cannot feed the
+// MutationObserver in a loop.
+function setTicks(host, t, place) {
+  let el = host.querySelector(":scope > .mt-ticks");
+  if (!t) {
+    if (el) el.remove();
+    return;
+  }
+  const { read, tip } = tickInfo(t);
+  const state = (read ? "read|" : "sent|") + tip;
+  if (el && el.dataset.state === state) return;
+  if (!el) {
+    el = makeTicks();
+    place(el);
+  }
+  el.dataset.state = state;
+  el.title = tip;
+  const [a, b] = el.querySelectorAll("path");
+  a.setAttribute("stroke", GREEN);
+  b.setAttribute("stroke", read ? GREEN : GREY);
+}
+
+function renderTicks() {
+  // open conversation: right after the subject title
+  const t = openThread();
+  if (t) {
+    const box = t.el.parentElement;
+    const h = t.el;
+    setTicks(
+      box,
+      findThread([h.getAttribute("data-thread-perm-id"), h.getAttribute("data-legacy-thread-id")], t.subject),
+      (el) => h.after(el)
+    );
+  }
+  // mail list rows: in front of the subject
+  document.querySelectorAll("tr.zA").forEach((row) => {
+    const subj = row.querySelector(".bog");
+    if (!subj || !subj.parentElement) return;
+    const idEl = row.querySelector("[data-thread-id], [data-legacy-thread-id]");
+    const gids = idEl
+      ? [idEl.getAttribute("data-thread-id"), idEl.getAttribute("data-legacy-thread-id")]
+      : [];
+    setTicks(subj.parentElement, findThread(gids, subj.textContent), (el) => subj.before(el));
+  });
+}
+
+setInterval(loadThreads, 20000);
+document.addEventListener("visibilitychange", loadThreads);
+loadThreads();
+
+// ---------- one observer drives everything ----------
 let scanTimer = null;
 function onDomChange() {
   document.querySelectorAll(EDITABLE).forEach(ensurePixel);
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(scanThread, 400);
+  scanTimer = setTimeout(() => {
+    scanThread();
+    renderTicks();
+  }, 400);
 }
 new MutationObserver(onDomChange).observe(document.body, { childList: true, subtree: true });
 onDomChange(); // already-open composes / conversation

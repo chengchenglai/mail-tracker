@@ -96,6 +96,14 @@ app.post("/api/replied", async (req, res) => {
   res.json({ ok: true });
 });
 
+// 4b) Delete one conversation ({key}) or every record ({all:true})
+app.post("/api/delete", async (req, res) => {
+  const { key, all } = req.body || {};
+  if (!key && all !== true) return res.status(400).json({ error: "key or all required" });
+  await store.remove(key ? String(key) : "");
+  res.json({ ok: true });
+});
+
 // 5) Data for the extension popup / dashboard / notifier
 app.get("/api/emails", async (_req, res) => {
   res.json(await store.listEmails());
@@ -137,6 +145,7 @@ const DASHBOARD = String.raw`<!doctype html><html lang="zh-Hant"><head><meta cha
 <header>📬 Mail Tracker</header>
 <main>
   <p class="muted">每 5 秒自動更新。每個對話只看「你最新寄出的那一封」之後的狀態：已回覆 ／ 已讀未回 ／ 尚未開啟。你自己在 Gmail 看信不會被算成對方開啟。</p>
+  <p><button id="clear">清空全部紀錄</button></p>
   <div id="groups"></div>
 </main>
 <script>
@@ -161,7 +170,8 @@ async function refresh(){
       (t.messages.length>1? '<span class="gcount">'+t.messages.length+' 封</span>':'')+
       '<span class="gright">'+statusBadge(t)+
       '<button data-key="'+esc(t.key)+'" data-replied="'+(t.status==='replied'?0:1)+'">'+
-        (t.status==='replied'?'取消已回覆':'標記已回覆')+'</button></span>'+
+        (t.status==='replied'?'取消已回覆':'標記已回覆')+'</button>'+
+      '<button data-del="'+esc(t.key)+'" title="刪除此對話的紀錄">刪除</button></span>'+
       '</div>';
     const sub = '<div class="gsub">'+esc(t.to)+' · 最新一封寄出 '+fmt(t.sentAt)+
       (t.status==='replied'?'':' · 已等待 '+ago(t.sentAt))+'</div>';
@@ -177,7 +187,14 @@ async function refresh(){
     return '<div class="group">'+head+sub+rows+'</div>';
   }).join('') || '<p class="muted">尚無資料</p>';
 }
+const postJson = (u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+document.getElementById('clear').addEventListener('click', async ()=>{
+  if(!confirm('確定要刪除全部追蹤紀錄嗎？無法復原。')) return;
+  await postJson('/api/delete',{all:true}); refresh();
+});
 document.getElementById('groups').addEventListener('click', async ev=>{
+  const d = ev.target.closest('button[data-del]');
+  if(d){ if(confirm('刪除這個對話的追蹤紀錄？')){ await postJson('/api/delete',{key:d.dataset.del}); refresh(); } return; }
   const b = ev.target.closest('button[data-key]'); if(!b) return;
   await fetch('/api/replied',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({key:b.dataset.key, replied:b.dataset.replied==='1'})});

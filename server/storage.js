@@ -92,6 +92,12 @@ const pgBackend = {
     const { rows } = await pg.query(`SELECT * FROM emails WHERE id=$1`, [id]);
     return rows.length ? fromRow(rows[0]) : null;
   },
+  async del(id) {
+    await pg.query("DELETE FROM emails WHERE id=$1", [id]);
+  },
+  async clear() {
+    await pg.query("DELETE FROM emails");
+  },
   async put(r) {
     await pg.query(
       `INSERT INTO emails (id, subject, recipient, created_at, opens, thread, snippet,
@@ -135,6 +141,14 @@ const jsonBackend = {
   async get(id) {
     const e = loadJson().emails[id];
     return e ? normalize({ ...e, id }) : null;
+  },
+  async del(id) {
+    const db = loadJson();
+    delete db.emails[id];
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+  },
+  async clear() {
+    fs.writeFileSync(DB_FILE, JSON.stringify({ emails: {} }, null, 2));
   },
   async put(r) {
     const db = loadJson();
@@ -297,6 +311,14 @@ export function setReplied(key, replied) {
       else continue;
       await be.put(rec);
     }
+  });
+}
+
+// Delete one conversation's records, or everything when no key is given.
+export function remove(key) {
+  return serial(async () => {
+    if (!key) return be.clear();
+    for (const rec of await be.all()) if (threadKey(rec) === key) await be.del(rec.id);
   });
 }
 
